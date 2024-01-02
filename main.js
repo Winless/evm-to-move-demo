@@ -1,17 +1,19 @@
 let { ethers, getDefaultProvider } = require('ethers')
 let { EthersAdapter, SafeFactory, ContractNetworksConfig} = require('@safe-global/protocol-kit')
 let Safe = require('@safe-global/protocol-kit').default
-console.log(Safe)
+let {AptosAccount, CoinClient, MoveView, BCS, AptosClient, HexString, TxnBuilderTypes} = require("aptos")
+const dotenv = require("dotenv")
+dotenv.config()
+
+const client = new AptosClient(process.env.APTOS_RPC_ENDPOINT);
+let pk = process.env.MOVE_OWNER_PK;
+let owner = new AptosAccount(new HexString(pk).toUint8Array())
+let other = process.env.MOVE_MULTISIG_OTHER_OWNER_ADDR
+
 let SafeApiKit = require('@safe-global/api-kit')
-let { MetaTransactionData } = require('@safe-global/safe-core-sdk-types')
-const web3Provider = "http://54.234.167.187:3044/v1"
+const web3Provider = process.env.EVM_RPC_ENDPOINT
 const provider = getDefaultProvider(web3Provider)
-const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-let abiCoder = new ethers.utils.AbiCoder()
-// connect the wallet to the provider
-// const signer = wallet.connect(provider);
-const safeOwner = provider.getSigner(0);
-console.log(wallet);
+const wallet = new ethers.Wallet(process.env.EVM_OWNER_PK, provider);
 let safeSDK;
 
 const ethAdapterOwner1 = new EthersAdapter({
@@ -19,71 +21,41 @@ const ethAdapterOwner1 = new EthersAdapter({
   signerOrProvider: wallet
 })
 
-// or using a custom service
+// Initialize SafeService with the chainId and txServiceUrl from environment variables
 const safeService = new SafeApiKit.default({
   chainId: 336n, // set the correct chainId
-  txServiceUrl: "http://54.234.167.187:8000/api/"
+  txServiceUrl: process.env.SAFE_SERVICE_API
 })
 
-async function main () {
-  const safeFactory = await SafeFactory.create({ ethAdapter: ethAdapterOwner1 })
-  console.log(safeFactory);
-
-  const safeAccountConfig = {
-    owners: [
-      await wallet.getAddress()
-    ],
-    threshold: 1,
-    // ... (Optional params)
-  }
-
-  const safeSdkOwner1 = await safeFactory.deploySafe({ safeAccountConfig })
-  const safeAddress = await safeSdkOwner1.getAddress()
-
-  console.log('Your Safe has been deployed:')
-  console.log(`safeAddress:${safeAddress}`)
-
-}
-
-async function buildTx() {
-  return {
-    to: await safeSDK.getAddress(),
-    data: '0x',
-    value: 0
-  }
-}
-
-async function vote() {
+// Function to vote on a safe contract
+async function vote(safeAddress, multiAccount) {
+  await checkSafeContractVoted(safeAddress, multiAccount)
   let ABI = [
     "function vote(bytes32 multisignAccount, uint64 sequence_number, bool approve)",
     "function callMove(bytes32 account, bytes memory data)"
   ];
   let iface = new ethers.utils.Interface(ABI);
-  const safeFactory = await SafeFactory.create({ ethAdapter: ethAdapterOwner1 })
-  let moveContract = "0x0000000000000000000000000000000000000000000000000000000000000001"
-  let precompileContract = "0x0000000000000000000000000000000000000009"
-  let safeAddress =        "0x0218e69EA455B4Fa2b2dF10131303A7470f900c6"
-  let multiAccount = "0x2322cb51e00e61f53795a1171ce0bb0a3dfd5687573b81d364d32b6d0a993e52"
   safeSDK = await Safe.create({ ethAdapter: ethAdapterOwner1, safeAddress })
   
-  // 1.encode the predefine vote calldata, using 1 as 
+  // 1.encode the predefine vote calldata
   // function vote(bytes32 multisignAccount, uint sequenceNumber, bool approve) 
   let calldata = iface.encodeFunctionData("vote", [multiAccount, 1, true]);
-  console.log(calldata.toString())
 
-  let txdata = iface.encodeFunctionData("callMove", [moveContract, calldata])
+  // 2.encode the callMove function
+  let txdata = iface.encodeFunctionData("callMove", [process.env.MOVE_FRAMEWORK, calldata])
   let safeTransactionData = {
-    to: precompileContract,
+    to: process.env.EVM_PRECOMPILE_CONTRACT,
     data: txdata,
     value: 0
   }
 
   const safeTransaction = await safeSDK.createTransaction({ safeTransactionData})
-  console.log(safeTransaction)
 
-  console.log("sign and propose");
+  console.log("sign the safe tx");
   const safeTxHash = await safeSDK.getTransactionHash(safeTransaction)
   const senderSignature = await safeSDK.signTransactionHash(safeTxHash)
+
+  console.log(`propose safe tx ${safeTxHash} using api kit`);
   await safeService.proposeTransaction({
     safeAddress,
     safeTransactionData: safeTransaction.data,
@@ -92,21 +64,25 @@ async function vote() {
     senderSignature: senderSignature.data,
   })
 
-  console.log("confirm tx")
+  console.log(`confirm safe tx ${safeTxHash} using api kit`)
   await safeService.confirmTransaction(safeTxHash, senderSignature.data)
 
-  console.log("execute tx");
+  console.log(`execute safe tx ${safeTxHash} send to the evm`);
   const executeTxResponse = await safeSDK.executeTransaction(safeTransaction)
   const receipt = await executeTxResponse.transactionResponse?.wait()
 
-  console.log(`Transaction executed:${receipt}`, receipt);
+  console.log(`Transaction executed`);
+  await checkSafeContractVoted(safeAddress, multiAccount)
 }
 
-async function run() {
+// Function to deploy a new safe contract
+async function deploySafe() {
   // Any address can be used. In this example you will use vitalik.eth
   const destination = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'
   const amount = 1e15.toString()
   // Create a Safe transaction with the provided parameters
+
+  console.log("deploy a gnosis safe contract");
 
   const safeAccountConfig = {
     owners: [
@@ -117,46 +93,80 @@ async function run() {
   }
 
   const safeFactory = await SafeFactory.create({ ethAdapter: ethAdapterOwner1 })
-  console.log("deploy safe");
   safeSDK = await safeFactory.deploySafe({ safeAccountConfig, saltNonce: parseInt(Math.random() * 1e8)  })
   const safeAddress = await safeSDK.getAddress()
-  console.log(`safe address: ${safeAddress}`)
-
-  // const safeTransactionData = await buildTx();
-
-  // const tx = await wallet.sendTransaction(transactionParameters)
-  // console.log('Fundraising.')
-  // console.log(`Deposit Transaction: https://goerli.etherscan.io/tx/${tx.hash}`)
-  // console.log(`Initial balance of Safe: ${await safeSDK.getBalance()} ETH`)
-
-  // const safeTransaction = await safeSDK.createTransaction({ safeTransactionData})
-  // console.log(safeTransaction)
-
-  // console.log("sign and propose");
-  // const safeTxHash = await safeSDK.getTransactionHash(safeTransaction)
-  // const senderSignature = await safeSDK.signTransactionHash(safeTxHash)
-  // await safeService.proposeTransaction({
-  //   safeAddress,
-  //   safeTransactionData: safeTransaction.data,
-  //   safeTxHash,
-  //   senderAddress: await wallet.getAddress(),
-  //   senderSignature: senderSignature.data,
-  // })
-
-  // console.log("confirm tx")
-  // const response = await safeService.confirmTransaction(safeTxHash, senderSignature.data)
-
-  // console.log("execute tx");
-  // const executeTxResponse = await safeSDK.executeTransaction(safeTransaction)
-  // const receipt = await executeTxResponse.transactionResponse?.wait()
-
-  // console.log('Transaction executed:')
-  // console.log(`https://goerli.etherscan.io/tx/${receipt.transactionHash}`)
-
-  // console.log(`The final balance of the Safe: ${await safeSDK.getBalance()} ETH`)
-
-
-  // console.log(`Deposit Transaction: https://goerli.etherscan.io/tx/${tx.hash}`)
+  console.log(`gnosis safe address: ${safeAddress}`)
+  return safeAddress
 }
 
-vote().then()
+// Function to setup a new Move multisig account
+async function setupMoveMultisigAccount(safeAddress) {
+  let payload = {
+        function: `0x1::multisig_account::get_next_multisig_account_address`,
+        type_arguments: [],
+        arguments: [owner.address().toString()],
+    };
+    let multisigAddress =  (await client.view(payload))[0];
+
+    console.log(`create multisign account ${multisigAddress}`);
+    let rawTxn = await client.generateTransaction(owner.address(), {
+        function: `0x1::multisig_account::create_with_owners`,
+        type_arguments: [],
+        arguments: [[TxnBuilderTypes.AccountAddress.fromHex(safeAddress)], 2, [], []],
+    });
+
+    console.log(`create multisig account tx ${await submitTx(rawTxn)}`);
+    const multi_payload = new TxnBuilderTypes.MultiSigTransactionPayload(
+        TxnBuilderTypes.EntryFunction.natural(
+            "0x1::aptos_account",
+            "0x1::multisig_account::add_owner",
+            [],
+            [BCS.bcsToBytes(TxnBuilderTypes.AccountAddress.fromHex(other))],
+        ),
+    );
+
+    let createTxn = await client.generateTransaction(owner.address(), {
+        function: `0x1::multisig_account::create_transaction`,
+        type_arguments: [],
+        arguments: [multisigAddress, BCS.bcsToBytes(multi_payload)],
+    });
+
+    console.log(`create multisig tx ${await submitTx(createTxn)}`);
+
+    return multisigAddress
+}
+
+// Function to check if a safe contract has voted
+async function checkSafeContractVoted(safeAddress, multiAccount) {
+    let payload = {
+        function: `0x1::multisig_account::vote`,
+        type_arguments: [],
+        arguments: [multiAccount, "1", safeAddress],
+    };
+    let result = await client.view(payload);
+
+    console.log(`safe contract voted to move multisig:${result[1]}`)
+}
+
+// Function to submit a transaction
+async function submitTx(rawTxn) {
+    const bcsTxn = await client.signTransaction(owner, rawTxn);
+    let result = await client.simulateTransaction(owner, rawTxn);
+    const pendingTxn = await client.submitTransaction(bcsTxn);
+    await client.waitForTransaction(pendingTxn.hash)
+    return pendingTxn.hash;
+}
+
+// Function to fix the multiAccount address
+function fix(multiAccount) {
+  return "0x" + '0'.repeat(66 - multiAccount.length) + multiAccount.slice(2)
+}
+
+// Main function to run the script
+async function run() {
+  let safeAddress = await deploySafe()
+  let multiAccount = fix(await setupMoveMultisigAccount(safeAddress))
+  await vote(safeAddress, multiAccount)
+}
+
+run().then()
