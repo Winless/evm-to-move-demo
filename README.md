@@ -49,6 +49,22 @@ The application uses several environment variables, which should be set in a `.e
 - `EVM_PRECOMPILE_CONTRACT`: The address of the EVM precompile contract.
 - `MOVE_FRAMEWORK`: The address of the Move framework.
 
+## Steps for `evm-to-move.js`
+
+1. Create a Gnosis Safe contract using the EVM wallet.
+2. Create a multisig account using the Move wallet, and set the Gnosis Safe contract created in step 1 as one of the owners.
+3. Create a multisig transaction (the content can be arbitrary, in this demo, an owner is added to the multisig account) using the Move wallet.
+4. Create a transaction using the EVM wallet to vote for the transaction created in step 3 in the Move multisig account (the ABI is precompiled in the EVM, see the demo for details).
+5. Propose and confirm the transaction created in step 4 to the deployed safeService.
+6. Execute the transaction created in step 4 using the EVM wallet.
+7. Check whether the multisig account has voted successfully.
+
+## Steps for `move-to-evm.js`
+
+1. Create a Counter.sol contract using the EVM wallet.
+2. Call the setNumber function of the Counter contract using the Move wallet.
+3. Check whether the number is set successfully.
+
 ## Note
 
 This is a basic overview of the project. For more detailed information, please refer to the comments in the source code.
